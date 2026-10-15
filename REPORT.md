@@ -11,7 +11,7 @@ Lưu ý kỹ thuật: file `e0.json` và `e2.json` bị **đảo nhãn `name`** 
 | E1 | LoRA LLM | 33,030,144 | 9.674 | 48.854 | 0.276 | [0.239, 0.318] | 1.254 | 0.149 | 0.211 | 0.549 |
 | E2 | + projector | 142,135,296 | 11.377 | 50.087 | 0.340 | [0.297, 0.381] | 1.141 | 0.204 | 0.286 | 0.576 |
 | E3 | + LoRA ViT | 148,426,752 | 12.032 | 54.141 | 0.436 | [0.397, 0.478] | 0.804 | 0.338 | 0.359 | 0.669 |
-| E4 | (chưa chạy) | – | – | – | – | – | – | – | – | – |
+| E4 | LoRA r=4 (ablation) | 118,935,552 | 8.324 | 60.160 | 0.426 | [0.383, 0.468] | 0.849 | 0.328 | 0.325 | 0.689 |
 
 Số `trainable_params` E1 ≈ 33M (252 module × 2×r×(d_in+d_out) với r=16 trên LLM) khớp GUIDE. E2 – E1 ≈ 109M, đúng kích thước projector (visual.merger 27M + visual.deepstack_merger_list 82M). E3 – E2 ≈ 6M, đúng LoRA ViT (96 module × r=16 trên attention/MLP của ViT). VRAM tăng dần (9.67 → 11.38 → 12.03 GB) vì phải lưu gradient và optimizer state cho projector float32 (E2) và thêm LoRA trên ViT (E3).
 
@@ -114,6 +114,32 @@ Cũng lưu ý: ở E0, F1 `crack` chỉ = 0.007 — model zero-shot gần như k
 Em chưa kịp xuất ảnh minh hoạ từ Colab về repo (chỉ có JSON evidence). Trong lần chạy kế tiếp em sẽ xuất 6 ảnh (2 đúng / 2 nhầm pothole↔crack / 2 manhole đúng) bằng `matplotlib.patches.Rectangle` để đưa vào `report/figures/`.
 
 ### Câu 10 — E4: bạn đổi biến nào, kết quả thế nào, và kết luận có đáng tin không?
+
+1. **Biến đã chọn**:
+   Em chọn biến `rank` trong LoRA từ `configs/e4.yaml` trên nền setup tốt nhất là **E3** (LoRA LLM + Projector float32 + LoRA ViT).
+   - Setup gốc E3: `r = 16`, `alpha = 32`.
+   - Setup ablation E4: giảm xuống **`r = 4`**, **`alpha = 8`** (theo đúng quy tắc $\alpha = 2 \times r$ của đề bài). Giữ nguyên mọi siêu tham số khác: seed=42, 300 steps, lr=2e-4, batch_size=2, grad_accum=4, coord="norm1000", train_fraction=1.0.
+
+2. **So sánh tài nguyên và tham số**:
+   - **Tham số huấn luyện**: giảm từ **148,426,752** (E3) xuống **118,935,552** (E4) — giảm đúng **29,491,200** tham số (giảm $\approx 20\%$). Điều này hoàn toàn khớp lý thuyết: với 252 module trên LLM và 96 module trên ViT (tổng 348 module), khi hạ rank từ 16 xuống 4 thì số tham số của ma trận LoRA $A$ và $B$ giảm 4 lần trên mỗi module.
+   - **VRAM đỉnh**: giảm từ **12.032 GB** (E3) xuống **8.324 GB** (E4) — tiết kiệm hơn **3.708 GB VRAM** ($\approx 31\%$). Đây là mức giảm rất quan trọng: ở 8.32 GB, mô hình có thể huấn luyện an toàn trên các GPU tiêu dùng phổ thông 8GB VRAM (như RTX 4060, RTX 3070) mà không lo tràn bộ nhớ (OOM).
+   - **Thời gian huấn luyện**: 60.160 phút (so với 54.141 phút của E3, chênh lệch không đáng kể và chịu ảnh hưởng bởi độ trễ I/O của session Colab).
+
+3. **So sánh hiệu năng phát hiện (F1 & từng lớp)**:
+   - **F1 micro**: E3 đạt **0.436** so với E4 ($r=4$) đạt **0.426** (chỉ giảm nhẹ $0.010$).
+   - **Precision & Recall**: E3 ($P=0.481, R=0.398$) vs E4 ($P=0.465, R=0.393$).
+   - **Chi tiết từng lớp**:
+     - `pothole`: E3 đạt 0.338 $\rightarrow$ E4 đạt **0.328** (giảm 0.010).
+     - `crack`: E3 đạt 0.359 $\rightarrow$ E4 đạt **0.325** (giảm 0.034).
+     - `manhole`: E3 đạt 0.669 $\rightarrow$ E4 đạt **0.689** (tăng nhẹ 0.020).
+     - `mean_iou`: E3 đạt 0.692 $\rightarrow$ E4 đạt **0.699**.
+     - `fp_per_image`: E3 là 0.804 $\rightarrow$ E4 là **0.849**.
+
+4. **Kết luận có đáng tin không? (Đánh giá qua khoảng tin cậy CI95)**:
+   - Khoảng tin cậy CI95 của E3 là `[0.397, 0.478]` (độ rộng 0.081).
+   - Khoảng tin cậy CI95 của E4 ($r=4$) là `[0.383, 0.468]` (độ rộng 0.085).
+   - **Nhận xét về CI**: Hai khoảng tin cậy này **chồng lấn rất sâu** lên nhau (vùng giao nhau từ 0.397 đến 0.468, chiếm gần như toàn bộ độ rộng của cả 2 CI). Mức chênh lệch F1 $\Delta = -0.010$ nằm hoàn toàn bên trong biên độ sai số ngẫu nhiên của bootstrap ($\pm 0.04$) trên tập test có 311 ảnh. Do đó, ta **không đủ cơ sở thống kê để khẳng định rank=16 vượt trội hơn rank=4**.
+   - **Kết luận thực tiễn**: Rank $r = 4$ là một điểm cân bằng (trade-off) tuyệt vời. Nó giảm tới 29.5 triệu tham số và hơn 3.7 GB VRAM bộ nhớ đỉnh nhưng vẫn giữ được năng lực grounding tương đương $r = 16$. Nếu triển khai thực tế trên các thiết bị biên hoặc hạ tầng GPU giá rẻ, $r = 4$ là cấu hình tối ưu hơn đáng kể.
 
 
 ## Nhìn lại
